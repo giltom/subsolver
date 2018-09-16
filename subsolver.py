@@ -6,6 +6,7 @@ import string
 import sys
 import abc
 import readline
+import functools
 
 PRINTABLE = set(string.printable) - {'\x0b', '\x0c'}
 
@@ -39,6 +40,7 @@ class SubData(abc.ABC):
             self.counts[val] = self.counts.get(val, 0) + 1
         self.trans = {}
         self.freqs = {val : self.counts[val] / len(data) for val in self.counts}
+        self.nfreqs = {}
     
     def values(self):
         return sorted(self.counts)
@@ -67,6 +69,26 @@ class SubData(abc.ABC):
     def tcount(self, value):
         return sum(count for val, count in self.counts.items() if self.trans[val] == value)
     
+    def ngram_freqs(self, n):
+        if n in self.nfreqs:
+            return dict(self.nfreqs[n])
+        counts = {}
+        for i in range(0, len(self.data) - n + 1, n):
+            ngram = self.data[i:i+n]
+            counts[ngram] = counts.get(ngram, 0) + 1
+        nngrams = len(self.data) - n + 1
+        freqs = {ngram : count / nngrams for ngram, count in counts.items()}
+        self.nfreqs[n] = freqs
+        return dict(freqs)
+
+    def num_values(self):
+        return len(self.counts)
+
+    def entropy(self):
+        if len(self.counts) == b'':
+            return 0
+        return -sum(p * math.log(p, 2) for p in self.freqs.values() if p != 0)
+
     @classmethod
     @abc.abstractmethod
     def empty_data(cls):
@@ -102,6 +124,10 @@ class SubData(abc.ABC):
     @abc.abstractmethod
     def val_to_string(cls, value):
         pass
+    
+    @classmethod
+    def vals_to_string(cls, vals):
+        return ''.join(cls.val_to_string(v) for v in vals)
     
     @classmethod
     @abc.abstractmethod
@@ -160,6 +186,19 @@ class SubData(abc.ABC):
             if self.is_translated(val):
                 print(' => ', end='')
                 self.print_value(val)
+            print(' : {:.02%}'.format(freq))
+    
+    def print_ngram_freqs(self, n=2, freqs=None):
+        if freqs is None:
+            freqs = self.ngram_freqs(n)
+        sfreqs = sorted(freqs.items(), key=lambda t: t[1], reverse=True)
+        for ngram, freq in sfreqs:
+            with print_color(Color.ORIG):
+                print(self.vals_to_string(ngram), end='')
+            if any(self.is_translated(val) for val in ngram):
+                print(' => ', end='')
+                for val in ngram:
+                    self.print_value(val)
             print(' : {:.02%}'.format(freq))
 
 class CharSubData(SubData):
@@ -581,6 +620,36 @@ class FindCommand(Command):
         except ValueError:
             print('Character not found in substituted data.')
 
+class NFreqCommand(Command):
+    def __init__(self):
+        helptext = 'Print n-gram frequency in the original data.'
+        invocation = '<n>'
+        super().__init__('nfreq', nargs=1, invocation=invocation, helptext=helptext)
+
+    def execute(self, cmdline, args):
+        super().execute(cmdline, args)
+        try:
+            n = int(args[0])
+        except ValueError:
+            raise CommandError('Argument must be a positive integer.')
+        cmdline.sdata.print_ngram_freqs(n)
+
+class StatCommand(Command):
+    def __init__(self):
+        helptext = 'Print statistics about the original data.'
+        super().__init__('stats', nargs=0, helptext=helptext)
+    
+    def execute(self, cmdline, args):
+        super().execute(cmdline, args)
+        nvals = cmdline.sdata.num_values()
+        print('Number of characters:', cmdline.sdata.data_length())
+        print('Number of unique characters:', nvals)
+        print('Character entropy (bits/character):', cmdline.sdata.entropy())
+        print('Expected entropy for random data (bits/character):', math.log(nvals, 2))
+        print('Number of unique bigrams:', len(cmdline.sdata.ngram_freqs(2)))
+        print('Number of unique trigrams:', len(cmdline.sdata.ngram_freqs(3)))
+        
+
 class SubsolveCommandLine(CommandLine):
     def __init__(self, sdata, encoding):
         super().__init__()
@@ -596,6 +665,8 @@ class SubsolveCommandLine(CommandLine):
         self.add_command(ExportMapCommand())
         self.add_command(WordsCommand())
         self.add_command(FindCommand())
+        self.add_command(NFreqCommand())
+        self.add_command(StatCommand())
     
     def is_binary(self):
         return isinstance(self.sdata, BinarySubData)
